@@ -1,0 +1,10 @@
+ctrl1	ctrl
+ctrl2	ctrl
+ctrl3	ctrl
+ctrl4	ctrl
+ctrl5	ctrl
+case1	case
+case2	case
+case3	case
+case4	case
+case5	case

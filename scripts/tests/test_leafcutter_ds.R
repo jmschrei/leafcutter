@@ -264,7 +264,7 @@ test_exon_file_missing_or_unusable <- function() {
   prefix=file.path(new_dir(), "bad_exons")
   r=run_ds(c("-p", "2", "-e", shQuote(bad), "-o", shQuote(prefix), shQuote(counts_file), shQuote(groups_file)))
   stopifnot(r$status == 0)
-  stopifnot(any(grepl("Warning", r$stderr)))
+  stopifnot(any(grepl("Error in", r$stderr, fixed=TRUE)))
   stopifnot(same_outputs(prefix, default_prefix))
 }
 

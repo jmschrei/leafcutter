@@ -1,6 +1,0 @@
-chr	start	end	strand	gene_name
-chr1	500	1000	+	GENE_A
-chr1	1200	1300	+	GENE_A
-chr1	3300	3400	+	GENE_B
-chr2	1200	1300	+	GENE_C
-chr2	6100	6200	+	GENE_D

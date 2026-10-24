@@ -167,6 +167,8 @@ test_zero_coverage_samples_dropped <- function() {
   colnames(counts)=samples
   res=differential_splicing(counts, x, min_samples_per_group=4)
   check_fit(res[["chr1:clu_1"]], t(counts[, 1:9]), x[1:9])
+  # a zero row adds nothing to the likelihood, so compare with the run on s1..s9
+  stopifnot(identical(res[["chr1:clu_1"]], differential_splicing(counts[, 1:9], x[1:9], min_samples_per_group=4)[["chr1:clu_1"]]))
 }
 
 test_min_coverage <- function() {

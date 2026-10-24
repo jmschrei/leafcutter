@@ -71,7 +71,7 @@ test_map_clusters_to_genes <- function() {
   # clu_2: 5' end 1000 matches C's exon end, 3' end 1300 matches C's exon start; C once
   # clu_3: 5000 and 6500 match exons on chr2 (E) and chr3 (G) only, so no gene
   # clu_4: 3' end 900 matches D's start on chr2; A's chr1 coordinates would match too
-  # clu_5: 3' end 200 matches F's start on chr4 only
+  # clu_5: 3' end 200 matches exon starts on chr1 (A) and chr4 (F), none on chr3
   r=map_clusters_to_genes(meta, exons)
   stopifnot(identical(class(r), "data.frame"))
   stopifnot(identical(colnames(r), c("clu", "genes")))

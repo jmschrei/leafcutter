@@ -122,6 +122,16 @@ test_df_with_covariates <- function() {
   r=dirichlet_multinomial_anova_mc(xF, xN, y, robust=FALSE)
   check_result(r, xF, xN, y, robust=FALSE)
   stopifnot(r$df == 4)
+  # lrtp < 0.001, so the null is refit from the full fit's intercept row; the
+  # reported null is at least as good as that refit
+  stopifnot(r$lrtp < 0.001)
+  b=r$fit_full$par$beta_raw[1, , drop=FALSE]
+  b[b < 1e-6]=1e-6
+  b[b > 1 - 1e-6]=1 - 1e-6
+  init=list(beta_raw=sweep(b, 1, rowSums(b), "/"), beta_scale=as.array(r$fit_full$par$beta_scale[1]), conc=r$fit_full$par$conc)
+  refit=rstan::optimizing(leafcutter:::stanmodels$dm_glm_multi_conc, data=list(N=nrow(y), K=ncol(y), P=1, y=y, x=xN, concShape=1.0001, concRate=1e-4),
+                          init=init, as_vector=FALSE)
+  stopifnot(r$fit_null$value >= refit$value - 1e-6)
   # the covariate in both models: one tested column
   xN2=xF[, c(1, 3)]
   r2=dirichlet_multinomial_anova_mc(xF, xN2, y, robust=FALSE)

@@ -237,12 +237,22 @@ class TempDirTestCase(unittest.TestCase):
         values.update(kwargs)
         return types.SimpleNamespace(**values)
 
-    def call(self, func, *args):
-        """Call func with the system temp dir moved under self.root; return (stdout, stderr)."""
+    def call(self, func, *args, tmp_files_allowed=False):
+        """Call func from self.root with the system temp dir moved under it.
+
+        Checks that nothing lands outside the input and run directories and returns
+        (stdout, stderr).
+        """
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(tempfile, "tempdir", self.systmp), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            func(*args)
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        try:
+            with mock.patch.object(tempfile, "tempdir", self.systmp), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                func(*args)
+        finally:
+            os.chdir(cwd)
+        self.assert_no_stray_files(tmp_files_allowed)
         return out.getvalue(), err.getvalue()
 
     def output(self, name, rundir=None):
@@ -255,13 +265,22 @@ class TempDirTestCase(unittest.TestCase):
             with self.subTest(file=name):
                 self.assertEqual(self.output(name, rundir), content)
 
-    def assert_no_stray_files(self):
-        """Every file under the temp root is an input or sits in a run directory."""
-        for dirpath, _, filenames in os.walk(self.root):
+    def assert_no_stray_files(self, tmp_files_allowed=False):
+        """Files sit in the input or a run directory; other directories are in the temp dir.
+
+        self.root is also the working directory. The script leaves one empty directory in
+        the temp dir per merge, and with more than 100 samples merged files in them too
+        (tmp_files_allowed).
+        """
+        for dirpath, dirnames, filenames in os.walk(self.root):
+            for name in dirnames:
+                path = os.path.join(dirpath, name)
+                if path != self.systmp and path not in self.allowed:
+                    self.assertEqual(dirpath, self.systmp, "stray directory " + path)
             for name in filenames:
                 path = os.path.join(dirpath, name)
-                self.assertTrue(
-                    any(path.startswith(d + os.sep) for d in self.allowed), path)
+                if not (tmp_files_allowed and path.startswith(self.systmp + os.sep)):
+                    self.assertIn(dirpath, self.allowed, "stray file " + path)
 
 
 class TestOverlaps(unittest.TestCase):
@@ -598,13 +617,15 @@ class TestSortJunctions(TempDirTestCase):
                          "chr2:100:999:clu_2_+ 4/9\n")
 
     def test_cluster_file_option(self):
+        """The cluster file is used instead of the run directory's t_refined."""
         clusters = os.path.join(self.indir, "clusters.txt")
         write_text(clusters, "chr1:+ 100:201:0 100:301:0 \n")
-        self.sort([("s1.junc", [junc("chr1", 100, 201, 3), junc("chr1", 100, 301, 1)])],
+        write_text(os.path.join(self.rundir, "t_refined"), "chr1:+ 100:201:0 100:401:0 \n")
+        self.sort([("s1.junc", [junc("chr1", 100, 201, 3), junc("chr1", 100, 301, 1),
+                                junc("chr1", 100, 401, 7)])],
                   None, cluster=clusters)
         self.assertEqual(self.output("s1.junc.t.sorted.gz"),
                          "chrom s1\nchr1:100:201:clu_1_+ 3/4\nchr1:100:301:clu_1_+ 1/4\n")
-        self.assertFalse(os.path.exists(os.path.join(self.rundir, "t_refined")))
 
     def test_missing_library_skipped(self):
         missing = os.path.join(self.indir, "missing.junc")
@@ -640,7 +661,10 @@ class TestSortJunctions(TempDirTestCase):
                          "chrom s1\nchrM:100:201:clu_1_+ 2/5\nchrM:100:301:clu_1_+ 3/5\n")
 
     def test_cluster_strand_matched_as_written(self):
-        """A cluster file naming strand "?" collects the sample's "?" junctions."""
+        """A cluster file naming strand "?" collects the sample's "?" junctions.
+
+        Pins the current behaviour: pooling never makes a "?" cluster.
+        """
         clusters = os.path.join(self.indir, "clusters.txt")
         write_text(clusters, "chr1:? 100:201:0 100:301:0 \n")
         self.sort([("s1.junc", [junc("chr1", 100, 201, 2, "?"), junc("chr1", 100, 301, 3, "?"),
@@ -659,7 +683,10 @@ class TestSortJunctions(TempDirTestCase):
         self.assertIn(MULTI_BLOCK.rstrip("\n"), out)
 
     def test_repeated_path_read_once_per_listing(self):
-        """A path listed twice gives one output file holding its counts twice."""
+        """A path listed twice gives one output file holding its counts twice.
+
+        Pins the current behaviour.
+        """
         path = self.write_juncs([("s1.junc", [junc("chr1", 100, 201, 2),
                                               junc("chr1", 100, 301, 3)])])[0]
         write_text(os.path.join(self.rundir, "t_refined"), "chr1:+ 100:201:0 100:301:0 \n")
@@ -685,16 +712,15 @@ class TestMergeFiles(TempDirTestCase):
 
 class TestMergeJunctions(TempDirTestCase):
 
-    def merge(self, contents, check_stray=True, **kwargs):
+    def merge(self, contents, tmp_files_allowed=False, **kwargs):
         names = []
         for i, text in enumerate(contents):
             name = os.path.join(self.rundir, "f%03d.sorted.gz" % i)
             write_text(name, text)
             names.append(name)
         write_text(os.path.join(self.rundir, "t_sortedlibs"), "".join(n + "\n" for n in names))
-        self.call(lc.merge_junctions, self.options(**kwargs))
-        if check_stray:
-            self.assert_no_stray_files()
+        self.call(lc.merge_junctions, self.options(**kwargs),
+                  tmp_files_allowed=tmp_files_allowed)
 
     def test_two_files(self):
         self.merge(["chrom s1\nr1 1/2\nr2 1/2\n", "chrom s2\nr1 0/3\nr2 3/3\n"])
@@ -714,7 +740,7 @@ class TestMergeJunctions(TempDirTestCase):
         """101 files are merged in two rounds; columns stay in list order."""
         n = 101
         self.merge(["chrom s%03d\nrow1 %d/1000\nrow2 1/%d\n" % (i, i, i + 1)
-                    for i in range(n)], check_stray=False)
+                    for i in range(n)], tmp_files_allowed=True)
         self.assertEqual(self.output("t_perind.counts.gz"),
                          "chrom " + " ".join("s%03d" % i for i in range(n)) + "\n"
                          "row1 " + " ".join("%d/1000" % i for i in range(n)) + "\n"
@@ -754,7 +780,6 @@ class TestMain(TempDirTestCase):
         self.call(lc.main, self.options(outprefix="main", minclureads=10, verbose=True),
                   paths)
         self.assert_outputs(main_expected(self.rundir))
-        self.assert_no_stray_files()
 
     def test_cluster_file_skips_pooling(self):
         paths = self.write_juncs(MAIN_SAMPLES)
@@ -762,20 +787,21 @@ class TestMain(TempDirTestCase):
         write_text(clusters, MAIN_REFINED)
         self.call(lc.main, self.options(outprefix="main", cluster=clusters), paths)
         self.assert_outputs(main_expected(self.rundir, with_pooling=False))
-        self.assert_no_stray_files()
 
 
 class TestCommandLine(TempDirTestCase):
 
-    def run_script(self, *args):
+    def run_script(self, *args, cwd=None):
         env = dict(os.environ)
         env["TMPDIR"] = self.systmp
-        return subprocess.run([sys.executable, SCRIPT] + list(args), cwd=self.root, env=env,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        proc = subprocess.run([sys.executable, SCRIPT] + list(args), cwd=cwd or self.root,
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               universal_newlines=True)
+        self.assert_no_stray_files()
+        return proc
 
-    def run_ok(self, *args):
-        proc = self.run_script(*args)
+    def run_ok(self, *args, cwd=None):
+        proc = self.run_script(*args, cwd=cwd)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc
 
@@ -800,43 +826,57 @@ class TestCommandLine(TempDirTestCase):
                 self.assert_outputs(main_expected(rundir), rundir)
                 self.assertIn(MULTI_BLOCK.rstrip("\n"), proc.stdout)
                 self.assertIn("Error in %s" % s1, proc.stderr)
-        self.assert_no_stray_files()
+
+    def test_default_rundir(self):
+        """Without -r the outputs go to the working directory, with paths built from "./"."""
+        listing = self.juncfile_list(MAIN_SAMPLES)
+        cwd = self.make_rundir("cwd")
+        self.run_ok("-j", listing, "-m", "10", cwd=cwd)
+        self.assert_outputs(main_expected("./", prefix="leafcutter"), cwd)
 
     def test_defaults(self):
         """-o leafcutter, -m 30, -p 0.001 and -l 100000 when not given.
 
-        250:301 has 31 reads, 31/31031 < 0.001; 5000:105001 is 100001 long; the cluster
-        at 200000 has 29 reads.
+        Each default sits on a boundary: the 5000:* introns have exactly 30 reads (kept)
+        and the cluster at 200000 has 29 (dropped); 300000:300201 has 30/30000 = 0.001 of
+        its cluster (kept) and 250:301 has 31/31031 < 0.001 (removed); 5000:105000 is
+        100000 long (kept) and 5000:105001 is 100001 (dropped).
         """
         listing = self.juncfile_list([("s1.junc", [
             junc("chr1", 100, 201, 20000), junc("chr1", 100, 301, 11000),
             junc("chr1", 250, 301, 31),
-            junc("chr1", 5000, 6001, 40), junc("chr1", 5000, 7001, 40),
-            junc("chr1", 5000, 105000, 40), junc("chr1", 5000, 105001, 40),
-            junc("chr1", 200000, 200101, 14), junc("chr1", 200000, 200201, 15)])])
+            junc("chr1", 5000, 6001, 30), junc("chr1", 5000, 7001, 30),
+            junc("chr1", 5000, 105000, 30), junc("chr1", 5000, 105001, 30),
+            junc("chr1", 200000, 200101, 14), junc("chr1", 200000, 200201, 15),
+            junc("chr1", 300000, 300101, 29970), junc("chr1", 300000, 300201, 30)])])
         self.run_ok("-j", listing, "-r", self.rundir)
         self.assertEqual(self.output("leafcutter_pooled"),
                          "chr1:+ 100:201:20000 100:301:11000 250:301:31 \n"
-                         "chr1:+ 5000:6001:40 5000:7001:40 5000:105000:40 \n"
-                         "chr1:+ 200000:200101:14 200000:200201:15 \n")
+                         "chr1:+ 5000:6001:30 5000:7001:30 5000:105000:30 \n"
+                         "chr1:+ 200000:200101:14 200000:200201:15 \n"
+                         "chr1:+ 300000:300101:29970 300000:300201:30 \n")
         self.assertEqual(self.output("leafcutter_refined"),
                          "chr1:+ 100:201:20000 100:301:11000 \n"
-                         "chr1:+ 5000:6001:40 5000:7001:40 5000:105000:40 \n")
+                         "chr1:+ 5000:6001:30 5000:7001:30 5000:105000:30 \n"
+                         "chr1:+ 300000:300101:29970 300000:300201:30 \n")
         self.assertEqual(self.output("leafcutter_perind.counts.gz"),
                          "chrom s1\n"
                          "chr1:100:201:clu_1_+ 20000/31000\n"
                          "chr1:100:301:clu_1_+ 11000/31000\n"
-                         "chr1:5000:105000:clu_2_+ 40/120\n"
-                         "chr1:5000:6001:clu_2_+ 40/120\n"
-                         "chr1:5000:7001:clu_2_+ 40/120\n")
+                         "chr1:5000:105000:clu_2_+ 30/90\n"
+                         "chr1:5000:6001:clu_2_+ 30/90\n"
+                         "chr1:5000:7001:clu_2_+ 30/90\n"
+                         "chr1:300000:300101:clu_3_+ 29970/30000\n"
+                         "chr1:300000:300201:clu_3_+ 30/30000\n")
         self.assertEqual(self.output("leafcutter_perind_numers.counts.gz"),
                          "s1\n"
                          "chr1:100:201:clu_1_+ 20000\n"
                          "chr1:100:301:clu_1_+ 11000\n"
-                         "chr1:5000:105000:clu_2_+ 40\n"
-                         "chr1:5000:6001:clu_2_+ 40\n"
-                         "chr1:5000:7001:clu_2_+ 40\n")
-        self.assert_no_stray_files()
+                         "chr1:5000:105000:clu_2_+ 30\n"
+                         "chr1:5000:6001:clu_2_+ 30\n"
+                         "chr1:5000:7001:clu_2_+ 30\n"
+                         "chr1:300000:300101:clu_3_+ 29970\n"
+                         "chr1:300000:300201:clu_3_+ 30\n")
 
     def test_quiet(self):
         listing = self.juncfile_list(MAIN_SAMPLES)
@@ -971,7 +1011,6 @@ class TestCommandLine(TempDirTestCase):
                         "chr1:5000:5101:clu_2_+ 4 1\n"
                         "chr1:5000:5201:clu_2_+ 0 6\n",
                 }, rundir)
-        self.assert_no_stray_files()
 
     def test_nochromcheck(self):
         listing = self.juncfile_list([("s1.junc", [
@@ -1016,7 +1055,6 @@ class TestCommandLine(TempDirTestCase):
 
     def test_no_juncfiles_option(self):
         proc = self.run_script("-r", self.rundir)
-        self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stderr, "Error: no junction file provided...\n")
         self.assertEqual(os.listdir(self.rundir), [])
 
@@ -1026,7 +1064,6 @@ class TestCommandLine(TempDirTestCase):
         with open(listing, "a") as f:
             f.write(missing + "\n")
         proc = self.run_script("-j", listing, "-r", self.rundir)
-        self.assertEqual(proc.returncode, 0)
         self.assertIn("%s does not exist... check your junction files.\n" % missing,
                       proc.stderr)
         self.assertEqual(os.listdir(self.rundir), [])

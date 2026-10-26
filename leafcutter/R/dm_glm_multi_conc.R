@@ -113,7 +113,9 @@ stan_optimizing=function(object, data, init, as_vector, verbose, ...) {
   }
   # rstan forces its default seed here
   seed=if (length(dots)) ..1 else sample.int(.Machine$integer.max, 1)
-  fit=optimize_with_module(model, data, init, seed)
+  fit=optimize_with_call(model, data, init, seed)
+  if (is.null(fit))
+    fit=optimize_with_module(model, data, init, seed)
   if (is.null(fit))
     return(invisible(list(stanmodel=object)))
   optim=fit$optim
@@ -130,6 +132,30 @@ stan_optimizing=function(object, data, init, as_vector, verbose, ...) {
   if (!as_vector)
     optim$par=theta
   optim
+}
+
+# optimize_with_module() as one .Call of the model's compiled routine, for a
+# model that has one and a (K, P) seen before, with an init and seed that
+# rstan's handling leaves without side effects. NULL otherwise, and when the
+# C++ code throws: optimize_with_module() then repeats the work and reports
+# the error as rstan does.
+optimize_with_call=function(model, data, init, seed) {
+  if (is.null(model$optimizing))
+    return(NULL)
+  shape=model$shapes[[paste(data$K, data$P)]]
+  simple_init=!is.function(init) && (is.list(init) || is.character(init) || is.numeric(init))
+  simple_seed=(is.integer(seed) || is.double(seed)) && !is.object(seed) && length(seed) == 1 &&
+    !is.na(seed) && abs(seed) < .Machine$integer.max
+  if (is.null(shape) || !simple_init || !simple_seed)
+    return(NULL)
+  if (is.numeric(init))
+    init=as.character(init)
+  args=list(init=init, seed=rstan_internal("check_seed")(seed, warn=1), method="optim",
+            algorithm="LBFGS", refresh=0L, save_iterations=FALSE)
+  out=.Call(model$optimizing, data, as.integer(seed), args, shape$skeleton)
+  if (is.null(out))
+    return(NULL)
+  list(optim=out[[1]], shape=shape, constrain=function(theta) out[[2]])
 }
 
 # rstan::optimizing()'s steps from building the C++ sampler to running the
@@ -183,6 +209,8 @@ stan_model_info=function(object) {
     model$data_names=stan_data_names(cppcode)
     newer_stan=rstan_internal("test_221")(cppcode) && model$module@constructors[[1]]$nargs == 2L
     model$fast=!newer_stan && all(vapply(model$data_names, rstan_internal("is_legal_stan_vname"), logical(1)))
+    if (model$fast && identical(object, stanmodels$dm_glm_multi_conc))
+      model$optimizing=`_leafcutter_dm_glm_multi_conc_optimizing`
   }
   assign(object@model_name, model, envir=stan_optimizing_cache)
   model

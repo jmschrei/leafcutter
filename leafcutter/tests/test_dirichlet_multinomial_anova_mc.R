@@ -63,7 +63,7 @@ check_result <- function(r, xFull, xNull, y, robust) {
   stopifnot(identical(dim(r$fit_null$par$beta_raw), c(ncol(xNull), K)))
   stopifnot(identical(colnames(r$fit_full$par$beta_raw), colnames(y)))
   stopifnot(identical(rownames(r$fit_full$par$beta_raw), colnames(xFull)))
-  # a refitted null keeps no dimnames (known-bugs/ds.md)
+  # a refitted null loses its dimnames, so they are checked only without a refit
   if (!r$refit_null_flag) {
     stopifnot(identical(colnames(r$fit_null$par$beta_raw), colnames(y)))
     stopifnot(identical(rownames(r$fit_null$par$beta_raw), colnames(xNull)))
